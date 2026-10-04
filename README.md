@@ -1,4 +1,4 @@
-# steamos-etc
+# steamos-etc-nix
 
 Declarative `/etc` files for standalone Home Manager on SteamOS (Steam Deck, Steam Frame).
 
@@ -23,7 +23,7 @@ SteamOS has two traits that break the usual approaches:
 
 ```nix
 # flake.nix
-inputs.steamos-etc.url = "github:JRMurr/steamos-etc";
+inputs.steamos-etc.url = "github:JRMurr/steamos-etc-nix";
 ```
 
 ```nix
