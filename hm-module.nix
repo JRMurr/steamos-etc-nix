@@ -33,12 +33,32 @@ in
       /run/opengl-driver at boot through a tmpfiles rule, in place of
       `non-nixos-gpu-setup`
     '';
+
+    package = lib.mkOption {
+      type = lib.types.package;
+      readOnly = true;
+      default = pkgs.callPackage ./package.nix { inherit (cfg) files; };
+      description = "The steamos-etc command built from `files`.";
+    };
   };
 
   config = lib.mkIf cfg.enable (
     lib.mkMerge [
       {
-        home.packages = [ (pkgs.callPackage ./package.nix { inherit (cfg) files; }) ];
+        home.packages = [ cfg.package ];
+
+        # Activation can't sudo, so it only warns. Catches what a switch alone
+        # misses: rollbacks, a switch without steamos-etc, a SteamOS update
+        # resetting /etc.
+        home.activation.steamosEtcCheck = lib.hm.dag.entryAfter [ "linkGeneration" ] ''
+          if ! drift=$(${cfg.package}/bin/steamos-etc --check); then
+            warnEcho "/etc differs from this generation:"
+            while read -r line; do
+              warnEcho "  $line"
+            done <<< "$drift"
+            warnEcho "To install it, run steamos-etc"
+          fi
+        '';
       }
 
       (lib.mkIf cfg.waitForNix {
