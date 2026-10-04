@@ -52,6 +52,8 @@ home-manager switch --flake ~/nix-config && steamos-etc
 
 `steamos-etc --check` reports drift without changing anything and exits 1 if there is any.
 
+Activation runs the same check and warns with the list of differing files. Activation can't use `sudo`, so it only warns. This catches a rollback, a switch without `steamos-etc`, or a SteamOS update resetting `/etc`.
+
 ## Options
 
 | Option | What it does |
