@@ -32,6 +32,7 @@
         sync = import ./checks/sync.nix { inherit pkgs; };
         activation = import ./checks/activation.nix { inherit pkgs home-manager; };
         services = import ./checks/services.nix { inherit pkgs home-manager; };
+        unit = import ./checks/unit.nix { inherit pkgs; };
       });
 
       formatter = forAllSystems (pkgs: pkgs.nixfmt);
