@@ -17,7 +17,8 @@ SteamOS has two traits that break the usual approaches:
 - writes `/etc/atomic-update.conf.d/steamos-etc.conf`, listing every file it manages;
 - removes files you stop declaring, tracked in `/etc/steamos-etc/manifest`;
 - adds a gcroot, `/nix/var/nix/gcroots/steamos-etc`, so store paths the files mention outlive their generation;
-- reloads systemd and applies changed tmpfiles rules.
+- reloads systemd and applies changed tmpfiles rules;
+- restarts running services whose unit or `.service.d` drop-in changed, and stops services whose unit it removes. Template units (`user@.service`) are never restarted.
 
 ## Usage
 
@@ -86,7 +87,7 @@ Two differences from writing the unit yourself:
 - `RequiresMountsFor=/nix/store` is added, since system units start before `nix.mount`.
 - `Install.WantedBy` and `Install.RequiredBy` become drop-ins on their targets (`multi-user.target.d/tailscaled.conf` with `Wants=tailscaled.service`). `systemctl enable` would make symlinks, which SteamOS updates drop. Other `Install` keys aren't supported.
 
-Each unit and drop-in is an entry in `files`, so the keep list, gcroot and drift check cover them. A new service still needs `sudo systemctl start` once; after that its targets start it at boot.
+Each unit and drop-in is an entry in `files`, so the keep list, gcroot and drift check cover them. A new service still needs `sudo systemctl start` once; after that its targets start it at boot, and `steamos-etc` restarts it when its unit changes.
 
 ## With steam-frame-nix
 

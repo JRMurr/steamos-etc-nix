@@ -72,6 +72,26 @@ writeShellApplication {
       [[ ! -L "$etc_dir/$path" ]] && cmp -s "$tree/$path" "$etc_dir/$path"
     }
 
+    # The service a unit file or drop-in belongs to, if it's one we may restart.
+    # Templates are left alone: user@.service is the whole user session.
+    service_of() {
+      local unit
+      case "$1" in
+        systemd/system/*.service.d/*) unit=$(basename "$(dirname "$1")" .d) ;;
+        systemd/system/*.service) unit=$(basename "$1") ;;
+        *) return 1 ;;
+      esac
+      [[ "$unit" == *@.service ]] && return 1
+      echo "$unit"
+    }
+
+    # Runs a systemctl action on a unit; with STEAMOS_ETC_ROOT, only prints it.
+    unit_action() {
+      echo "$1 $2"
+      [[ "$root" == / ]] || return 0
+      systemctl "$1" "$2"
+    }
+
     check() {
       local drift=0 path
 
@@ -99,8 +119,9 @@ writeShellApplication {
         exec sudo "$(readlink -f "$0")"
       fi
 
-      local path
+      local path unit
       local -a tmpfiles=()
+      local -A changed=()
 
       while read -r path; do
         is_current "$path" && continue
@@ -110,9 +131,20 @@ writeShellApplication {
         install -D -m 0644 "$tree/$path" "$etc_dir/$path"
         echo "installed /etc/$path"
         [[ "$path" == tmpfiles.d/* ]] && tmpfiles+=("$etc_dir/$path")
+        if unit=$(service_of "$path"); then
+          changed[$unit]=1
+        fi
       done < <(managed_files)
 
       while read -r path; do
+        # Stopped while its unit file still exists. A removed drop-in only
+        # changes its service, which stays.
+        if [[ "$path" == *.service ]] && unit=$(service_of "$path"); then
+          unit_action stop "$unit"
+          unset 'changed[$unit]'
+        elif unit=$(service_of "$path"); then
+          changed[$unit]=1
+        fi
         rm -f "$etc_dir/$path"
         echo "removed /etc/$path"
       done < <(stale_files)
@@ -120,12 +152,21 @@ writeShellApplication {
       mkdir -p "$(dirname "$manifest")"
       managed_files > "$manifest"
 
+      if [[ "$root" == / ]]; then
+        systemctl daemon-reload
+      fi
+
+      # try-restart: running services pick up the new unit; stopped ones stay
+      # stopped, and a new one waits for `systemctl start` or the next boot.
+      for unit in "''${!changed[@]}"; do
+        unit_action try-restart "$unit"
+      done
+
       [[ "$root" == / ]] || return 0
 
       # Root the tree: the files reference store paths (GPU drivers) that must
       # outlive the Home Manager generation that built them.
       ln -sfn "$tree" /nix/var/nix/gcroots/steamos-etc
-      systemctl daemon-reload
       if [[ ''${#tmpfiles[@]} -gt 0 ]]; then
         systemd-tmpfiles --create "''${tmpfiles[@]}"
       fi
