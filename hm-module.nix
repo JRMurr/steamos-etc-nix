@@ -6,6 +6,69 @@
 }:
 let
   cfg = config.programs.steamos-etc;
+
+  unitAtom = lib.types.oneOf [
+    lib.types.bool
+    lib.types.int
+    lib.types.str
+    lib.types.path
+  ];
+  unitType = lib.types.attrsOf (
+    lib.types.attrsOf (lib.types.either unitAtom (lib.types.listOf unitAtom))
+  );
+
+  # Home Manager's rendering for user units: lists become repeated keys.
+  toSystemdIni = lib.generators.toINI {
+    listsAsDuplicateKeys = true;
+    mkKeyValue =
+      key: value:
+      let
+        value' = if lib.isBool value then lib.boolToString value else toString value;
+      in
+      "${key}=${value'}";
+  };
+
+  # [Install] -> the dependency each key becomes in a drop-in on its target.
+  installDeps = {
+    WantedBy = "Wants";
+    RequiredBy = "Requires";
+  };
+
+  # Units run from the store, and SteamOS starts system units before nix.mount.
+  waitForStore =
+    unit:
+    unit
+    // {
+      Unit = (unit.Unit or { }) // {
+        RequiresMountsFor = lib.toList (unit.Unit.RequiresMountsFor or [ ]) ++ [ "/nix/store" ];
+      };
+    };
+
+  dropUnset = lib.mapAttrs (_: lib.filterAttrs (_: value: value != [ ]));
+
+  serviceFiles =
+    name: unit:
+    let
+      unitName = "${name}.service";
+      install = unit.Install or { };
+
+      body = lib.filterAttrs (_: section: section != { }) (
+        dropUnset (waitForStore (removeAttrs unit [ "Install" ]))
+      );
+
+      # `systemctl enable` would link the unit into <target>.wants, but SteamOS
+      # updates keep only regular files. A drop-in on the target does the same.
+      dropIns = lib.concatMapAttrs (
+        key: dep:
+        lib.listToAttrs (
+          map (target: {
+            name = "systemd/system/${target}.d/${name}.conf";
+            value = toSystemdIni { Unit.${dep} = unitName; };
+          }) (install.${key} or [ ])
+        )
+      ) installDeps;
+    in
+    { "systemd/system/${unitName}" = toSystemdIni body; } // dropIns;
 in
 {
   options.programs.steamos-etc = {
@@ -20,6 +83,28 @@ in
       description = ''
         Files to keep under /etc, relative path -> content. Installed as real
         files, not store links, and added to SteamOS's atomic-update keep list.
+      '';
+    };
+
+    services = lib.mkOption {
+      type = lib.types.attrsOf unitType;
+      default = { };
+      example = lib.literalExpression ''
+        {
+          tailscaled = {
+            Unit.Description = "Tailscale node agent";
+            Service.ExecStart = "''${pkgs.tailscale}/bin/tailscaled";
+            Install.WantedBy = [ "multi-user.target" ];
+          };
+        }
+      '';
+      description = ''
+        System services, in the same shape as Home Manager's
+        `systemd.user.services`. Each becomes a unit in /etc/systemd/system with
+        `RequiresMountsFor=/nix/store` added. `Install.WantedBy` and
+        `Install.RequiredBy` become drop-ins on their targets instead of the
+        symlinks `systemctl enable` makes, since SteamOS updates keep only
+        regular files; other `Install` keys aren't supported.
       '';
     };
 
@@ -59,6 +144,16 @@ in
             warnEcho "To install it, run steamos-etc"
           fi
         '';
+      }
+
+      # TODO: timers and sockets, the same way as services.
+      {
+        assertions = lib.mapAttrsToList (name: unit: {
+          assertion = builtins.all (key: installDeps ? ${key}) (builtins.attrNames (unit.Install or { }));
+          message = "programs.steamos-etc.services.${name}.Install: only WantedBy and RequiredBy are supported.";
+        }) cfg.services;
+
+        programs.steamos-etc.files = lib.concatMapAttrs serviceFiles cfg.services;
       }
 
       (lib.mkIf cfg.waitForNix {

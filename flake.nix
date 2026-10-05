@@ -31,6 +31,7 @@
       checks = forAllSystems (pkgs: {
         sync = import ./checks/sync.nix { inherit pkgs; };
         activation = import ./checks/activation.nix { inherit pkgs home-manager; };
+        services = import ./checks/services.nix { inherit pkgs home-manager; };
       });
 
       formatter = forAllSystems (pkgs: pkgs.nixfmt);

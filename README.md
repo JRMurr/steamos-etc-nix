@@ -59,10 +59,34 @@ Activation runs the same check and warns with the list of differing files. Activ
 | Option | What it does |
 | --- | --- |
 | `files` | Path relative to `/etc` -> content |
+| `services` | System services, shaped like Home Manager's `systemd.user.services`. See [Services](#services). |
 | `waitForNix` | Adds a `user@.service` drop-in that holds the user session until `nix.mount`. Without it, Home Manager's `environment.d` and `user-dirs.dirs` links can dangle at login. |
 | `gpuDrivers` | Creates `/run/opengl-driver` at boot through a tmpfiles rule. This replaces `non-nixos-gpu-setup`, whose rule is itself a store link and so is unreadable at boot. Also silences Home Manager's hint to run that script. |
 
 If you ran `non-nixos-gpu-setup` before, `steamos-etc` replaces its `/etc/tmpfiles.d/non-nixos-gpu.conf` link. Its gcroot, `/nix/var/nix/gcroots/non-nixos-gpu.conf`, then points at the new file and can be deleted.
+
+## Services
+
+`services` writes system units the way Home Manager's `systemd.user.services` writes user units:
+
+```nix
+programs.steamos-etc.services.tailscaled = {
+  Unit.Description = "Tailscale node agent";
+  Service = {
+    ExecStart = "${pkgs.tailscale}/bin/tailscaled --state=/var/lib/tailscale/tailscaled.state";
+    Type = "notify";
+    StateDirectory = "tailscale";
+  };
+  Install.WantedBy = [ "multi-user.target" ];
+};
+```
+
+Two differences from writing the unit yourself:
+
+- `RequiresMountsFor=/nix/store` is added, since system units start before `nix.mount`.
+- `Install.WantedBy` and `Install.RequiredBy` become drop-ins on their targets (`multi-user.target.d/tailscaled.conf` with `Wants=tailscaled.service`). `systemctl enable` would make symlinks, which SteamOS updates drop. Other `Install` keys aren't supported.
+
+Each unit and drop-in is an entry in `files`, so the keep list, gcroot and drift check cover them. A new service still needs `sudo systemctl start` once; after that its targets start it at boot.
 
 ## With steam-frame-nix
 
