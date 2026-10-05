@@ -1,0 +1,38 @@
+# Runs `nix flake check` natively on both platforms SteamOS runs on: aarch64 (Steam Frame)
+# and x86_64 (Steam Deck). The checks are the CLI against a scratch /etc, the Hypothesis
+# property tests, and the module evaluated inside Home Manager.
+name: Check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04-arm, ubuntu-24.04]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      # Determinate Nix (flakes on by default).
+      - uses: DeterminateSystems/determinate-nix-action@v3
+
+      # Caches built store paths in GitHub Actions' cache between runs.
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+        with:
+          use-flakehub: false
+
+      - name: Check the flake (builds this system's checks)
+        run: nix flake check -L
