@@ -1,31 +1,37 @@
 # steamos-etc-nix
 
-Declarative `/etc` files for standalone Home Manager on SteamOS (Steam Deck, Steam Frame).
+Declarative `/etc` files and system services for standalone Home Manager on SteamOS (Steam Deck, Steam Frame).
 
-Home Manager can't write `/etc`. This flake adds a `steamos-etc` command that installs the files you declare there. It runs after `home-manager switch` and asks for `sudo` only when something differs.
+Home Manager can't touch `/etc`, and on SteamOS the usual workarounds break. So this flake gives you a Home Manager module where you declare the `/etc` files (and systemd services) you want, plus a `steamos-etc` command that installs them. Run it after `home-manager switch`, it only asks for `sudo` when something actually changed.
 
-## Why
+It started as a way to get GPU drivers and [tailscale](#services) working on the Steam Frame. There's a write up of the full setup in [this blog post](https://johns.codes/blog/nix-on-steam-frame).
 
-SteamOS has two traits that break the usual approaches:
+## Why not just write to /etc?
 
-- **Updates replace the root.** `/etc` is a writable overlay kept under `/var`, but updates drop any file missing from a keep list in `/etc/atomic-update.conf.d/`.
-- **`/nix` mounts late.** The Nix installer's `steam-deck` planner keeps the store in `/home/nix` and bind-mounts it with `nix.mount`. tmpfiles and the user session start before that mount, so any store link they read dangles.
+SteamOS has two quirks that break the normal approaches:
 
-`steamos-etc` therefore:
+- **Updates replace the root.** `/etc` is a writable overlay (kept under `/var`), but an update drops any file that isn't on a keep list in `/etc/atomic-update.conf.d/`.
+- **`/nix` mounts late.** The nix installer's `steam-deck` mode keeps the store in `/home/nix` and bind mounts it with `nix.mount`. tmpfiles and your user session start *before* that mount, so any store symlink they read is dangling.
 
-- installs real files, never store links, and replaces any existing link;
-- writes `/etc/atomic-update.conf.d/steamos-etc.conf`, listing every file it manages;
-- removes files you stop declaring, tracked in `/etc/steamos-etc/manifest`;
-- adds a gcroot, `/nix/var/nix/gcroots/steamos-etc`, so store paths the files mention outlive their generation;
-- reloads systemd and applies changed tmpfiles rules;
-- restarts running services whose unit or `.service.d` drop-in changed, starts what a new or changed target drop-in pulls in (when that target is up), and stops services whose unit it removes. Template units (`user@.service`) are never restarted.
+So `steamos-etc`:
+
+- installs real files, never store links (and replaces any link already in the way)
+- adds every file it manages to `/etc/atomic-update.conf.d/steamos-etc.conf` so updates keep them
+- removes files you stop declaring (tracked in `/etc/steamos-etc/manifest`)
+- adds a gcroot (`/nix/var/nix/gcroots/steamos-etc`) so store paths the files mention don't get garbage collected
+- reloads systemd and applies changed tmpfiles rules
+- starts, restarts, and stops services as their units change (see [Services](#services))
 
 ## Usage
+
+Add the flake input
 
 ```nix
 # flake.nix
 inputs.steamos-etc.url = "github:JRMurr/steamos-etc-nix";
 ```
+
+then import the module and turn on what you need
 
 ```nix
 # home.nix
@@ -40,35 +46,34 @@ inputs.steamos-etc.url = "github:JRMurr/steamos-etc-nix";
     waitForNix = true;
     gpuDrivers = true;
 
+    # any other file you want under /etc
     files."tmpfiles.d/my-cache.conf" = "d /var/cache/my-app 0755 root root -";
   };
 }
 ```
 
-Then switch and sync:
+Then switch and sync
 
 ```bash
 home-manager switch --flake ~/nix-config && steamos-etc
 ```
 
-`steamos-etc --check` reports drift without changing anything and exits 1 if there is any.
-
-Activation runs the same check and warns with the list of differing files. Activation can't use `sudo`, so it only warns. This catches a rollback, a switch without `steamos-etc`, or a SteamOS update resetting `/etc`.
+`steamos-etc --check` shows what differs without changing anything (exits 1 if anything does). Home Manager activation runs the same check and warns you, since activation can't `sudo` itself. That catches a rollback, a switch where you forgot `steamos-etc`, or a SteamOS update resetting `/etc`.
 
 ## Options
 
 | Option | What it does |
 | --- | --- |
 | `files` | Path relative to `/etc` -> content |
-| `services` | System services, shaped like Home Manager's `systemd.user.services`. See [Services](#services). |
-| `waitForNix` | Adds a `user@.service` drop-in that holds the user session until `nix.mount`. Without it, Home Manager's `environment.d` and `user-dirs.dirs` links can dangle at login. |
-| `gpuDrivers` | Creates `/run/opengl-driver` at boot through a tmpfiles rule. This replaces `non-nixos-gpu-setup`, whose rule is itself a store link and so is unreadable at boot. Also silences Home Manager's hint to run that script. |
+| `services` | System services, written like Home Manager's `systemd.user.services`. See [Services](#services). |
+| `waitForNix` | Holds your user session until `nix.mount` is up (a `user@.service` drop-in). Without it Home Manager's `environment.d` and `user-dirs.dirs` links can dangle at login. |
+| `gpuDrivers` | Sets up `/run/opengl-driver` at boot with a tmpfiles rule. Replaces `non-nixos-gpu-setup`, whose rule is itself a store link and so can't be read at boot. Also silences Home Manager telling you to run that script. |
 
-If you ran `non-nixos-gpu-setup` before, `steamos-etc` replaces its `/etc/tmpfiles.d/non-nixos-gpu.conf` link. Its gcroot, `/nix/var/nix/gcroots/non-nixos-gpu.conf`, then points at the new file and can be deleted.
+If you already ran `non-nixos-gpu-setup`, `steamos-etc` replaces its `/etc/tmpfiles.d/non-nixos-gpu.conf` link. You can then delete its leftover gcroot at `/nix/var/nix/gcroots/non-nixos-gpu.conf`.
 
 ## Services
 
-`services` writes system units the way Home Manager's `systemd.user.services` writes user units:
+`services` lets you write system units the same way you'd write user units with `systemd.user.services`. For example here's tailscale
 
 ```nix
 programs.steamos-etc.services.tailscaled = {
@@ -82,12 +87,20 @@ programs.steamos-etc.services.tailscaled = {
 };
 ```
 
-Two differences from writing the unit yourself:
+A couple things are different from writing the unit by hand:
 
-- `RequiresMountsFor=/nix/store` is added, since system units start before `nix.mount`.
-- `Install.WantedBy` and `Install.RequiredBy` become drop-ins on their targets (`multi-user.target.d/tailscaled.conf` with `Wants=tailscaled.service`). `systemctl enable` would make symlinks, which SteamOS updates drop. Other `Install` keys aren't supported.
+- `RequiresMountsFor=/nix/store` gets added for you, since system units also start before `nix.mount`.
+- `Install.WantedBy` and `Install.RequiredBy` turn into drop-ins on their targets (`multi-user.target.d/tailscaled.conf` with `Wants=tailscaled.service`). `systemctl enable` would make symlinks, which SteamOS updates throw away. Other `Install` keys aren't supported.
 
-Each unit and drop-in is an entry in `files`, so the keep list, gcroot and drift check cover them. A new service with `Install.WantedBy` starts as soon as `steamos-etc` installs it, its targets start it at boot, and `steamos-etc` restarts it when its unit changes. One without `Install` is only installed.
+On each run `steamos-etc` also keeps the services in sync:
+
+- a new service with `Install.WantedBy` starts right away (and on every boot after)
+- a running service whose unit or `.service.d` drop-in changed gets restarted
+- a service you removed gets stopped
+- a service without `Install` is only installed, start it yourself
+- template units (`user@.service`) are never restarted, that would kill your session
+
+Each unit and drop-in is just an entry in `files` under the hood, so the keep list, gcroot and drift check all cover them.
 
 ## Development
 
@@ -95,6 +108,10 @@ Each unit and drop-in is an entry in `files`, so the keep list, gcroot and drift
 nix flake check
 ```
 
-The command is `steamos_etc.py`. `checks/sync.nix` runs it against a scratch root (`STEAMOS_ETC_ROOT`), which skips `sudo` and prints systemd actions instead of running them. `checks/unit.nix` runs the Hypothesis property tests: `test_steamos_etc.py` for the pure functions, `test_apply.py` for `check`/`apply` over random sequences of generations. `checks/activation.nix` and `checks/services.nix` evaluate the module inside a Home Manager configuration.
+The command itself is `steamos_etc.py`. The checks:
 
-CI (`.github/workflows/check.yml`) runs `nix flake check` on pull requests and pushes to main, natively on aarch64 (Steam Frame) and x86_64 (Steam Deck).
+- `checks/sync.nix` runs it against a scratch root (`STEAMOS_ETC_ROOT`), which skips `sudo` and prints systemd actions instead of running them
+- `checks/unit.nix` runs the Hypothesis property tests: `test_steamos_etc.py` for the pure functions, `test_apply.py` for `check`/`apply` over random sequences of generations
+- `checks/activation.nix` and `checks/services.nix` evaluate the module inside a Home Manager config
+
+CI (`.github/workflows/check.yml`) runs `nix flake check` on PRs and pushes to main, natively on both aarch64 (Steam Frame) and x86_64 (Steam Deck).
