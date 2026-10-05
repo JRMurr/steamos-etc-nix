@@ -13,8 +13,9 @@ let
     files."tmpfiles.d/gpu.conf" = "L+ /run/opengl-driver - - - - /nix/store/new\n";
   };
 
-  # Services: one changes, one goes away, one stays; plus drop-ins on a template
-  # (user@, never restarted) and on a target (not a service).
+  # Services: one changes, one goes away, one stays and becomes wanted, one is new
+  # and wanted, one is new and not wanted; plus a drop-in on a template (user@,
+  # never restarted).
   unitsBefore = pkgs.callPackage ../package.nix {
     files = {
       "systemd/system/changed.service" = "[Service]\nExecStart=/nix/store/old\n";
@@ -31,6 +32,9 @@ let
       "systemd/system/kept.service" = "[Service]\nExecStart=/nix/store/kept\n";
       "systemd/system/user@.service.d/nix.conf" = "[Unit]\nAfter=nix.mount\n";
       "systemd/system/multi-user.target.d/kept.conf" = "[Unit]\nWants=kept.service\n";
+      "systemd/system/fresh.service" = "[Service]\nExecStart=/nix/store/fresh\n";
+      "systemd/system/multi-user.target.d/fresh.conf" = "[Unit]\nWants=fresh.service\n";
+      "systemd/system/manual.service" = "[Service]\nExecStart=/nix/store/manual\n";
     };
   };
 
@@ -74,19 +78,21 @@ pkgs.runCommand "steamos-etc-sync" { } ''
   ${after}/bin/steamos-etc --check || fail "not idempotent"
   [[ $(${after}/bin/steamos-etc) == "/etc up to date" ]] || fail "rewrote an up-to-date /etc"
 
-  # Services: restart what changed, stop what's gone, leave the rest.
+  # Services: restart what changed, stop what's gone, start what's newly wanted.
   export STEAMOS_ETC_ROOT=$PWD/units
   mkdir -p units/etc
   ${unitsBefore}/bin/steamos-etc > /dev/null
   ${unitsAfter}/bin/steamos-etc > units.out
-  grep -E '^(try-restart|stop) ' units.out > units.log || true
+  grep -E '^(try-restart|restart|start|stop) ' units.out > units.log || true
   grep -qx 'try-restart changed.service' units.log || fail "changed unit not restarted"
   grep -qx 'try-restart dropin.service' units.log || fail "unit with changed drop-in not restarted"
   grep -qx 'stop gone.service' units.log || fail "removed unit not stopped"
-  grep -q 'kept.service' units.log && fail "unchanged unit touched"
+  grep -qx 'start kept.service' units.log || fail "newly wanted unit not started"
+  grep -qx 'restart fresh.service' units.log || fail "new wanted unit not started"
+  grep -qx 'try-restart manual.service' units.log || fail "new unwanted unit started"
   grep -q 'user@' units.log && fail "template unit restarted"
   grep -q 'multi-user' units.log && fail "target restarted"
-  [[ $(wc -l < units.log) == 3 ]] || fail "unexpected actions: $(cat units.log)"
+  [[ $(wc -l < units.log) == 6 ]] || fail "unexpected actions: $(cat units.log)"
 
   touch $out
 ''

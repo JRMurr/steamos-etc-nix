@@ -85,6 +85,30 @@ writeShellApplication {
       echo "$unit"
     }
 
+    # The target a drop-in extends, for drop-ins on targets.
+    target_of() {
+      case "$1" in
+        systemd/system/*.target.d/*) basename "$(dirname "$1")" .d ;;
+        *) return 1 ;;
+      esac
+    }
+
+    # The units a drop-in pulls in (Wants=, Requires=), templates excluded.
+    wanted_by() {
+      local unit
+      # One line can name several units: Wants=a.service b.service
+      sed -n 's/^\(Wants\|Requires\)=//p' "$1" | tr ' ' '\n' | while read -r unit; do
+        [[ -z "$unit" || "$unit" == *@.* ]] || echo "$unit"
+      done
+    }
+
+    # Whether a target is up, so what it pulls in should run now. Without systemd
+    # (STEAMOS_ETC_ROOT), every target counts as up.
+    target_active() {
+      [[ "$root" == / ]] || return 0
+      systemctl is-active --quiet "$1"
+    }
+
     # Runs a systemctl action on a unit; with STEAMOS_ETC_ROOT, only prints it.
     unit_action() {
       echo "$1 $2"
@@ -119,9 +143,9 @@ writeShellApplication {
         exec sudo "$(readlink -f "$0")"
       fi
 
-      local path unit
-      local -a tmpfiles=()
-      local -A changed=()
+      local path unit target
+      local -a tmpfiles=() targets=()
+      local -A changed=() wanted=()
 
       while read -r path; do
         is_current "$path" && continue
@@ -133,6 +157,9 @@ writeShellApplication {
         [[ "$path" == tmpfiles.d/* ]] && tmpfiles+=("$etc_dir/$path")
         if unit=$(service_of "$path"); then
           changed[$unit]=1
+        fi
+        if target=$(target_of "$path"); then
+          targets+=("$target" "$path")
         fi
       done < <(managed_files)
 
@@ -156,10 +183,27 @@ writeShellApplication {
         systemctl daemon-reload
       fi
 
-      # try-restart: running services pick up the new unit; stopped ones stay
-      # stopped, and a new one waits for `systemctl start` or the next boot.
+      # What a new or changed target drop-in pulls in starts now, as it would at
+      # boot, if that target is up.
+      for ((i = 0; i < ''${#targets[@]}; i += 2)); do
+        target_active "''${targets[i]}" || continue
+        while read -r unit; do
+          wanted[$unit]=1
+        done < <(wanted_by "$etc_dir/''${targets[i + 1]}")
+      done
+
+      # Changed services: running ones pick up the new unit (try-restart); stopped
+      # ones stay stopped unless a target wants them (restart starts them too).
       for unit in "''${!changed[@]}"; do
+        [[ -v "wanted[$unit]" ]] && continue
         unit_action try-restart "$unit"
+      done
+      for unit in "''${!wanted[@]}"; do
+        if [[ -v "changed[$unit]" ]]; then
+          unit_action restart "$unit"
+        else
+          unit_action start "$unit"
+        fi
       done
 
       [[ "$root" == / ]] || return 0
