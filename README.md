@@ -89,10 +89,6 @@ Two differences from writing the unit yourself:
 
 Each unit and drop-in is an entry in `files`, so the keep list, gcroot and drift check cover them. A new service with `Install.WantedBy` starts as soon as `steamos-etc` installs it, its targets start it at boot, and `steamos-etc` restarts it when its unit changes. One without `Install` is only installed.
 
-## With steam-frame-nix
-
-[steam-frame-nix](https://github.com/lhns/steam-frame-nix) writes nothing to `/etc`, so the two can be used together. Its template sets `targets.genericLinux.gpu.enable = false`. Turn that back on if you use `gpuDrivers`.
-
 ## Development
 
 ```bash
