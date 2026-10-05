@@ -159,6 +159,7 @@ def apply(etc, systemd):
 
     tmpfiles = []
     changed = set()
+    stopped = set()
     target_drop_ins = []
 
     for path in etc.managed():
@@ -175,14 +176,17 @@ def apply(etc, systemd):
 
     for path in etc.stale():
         # Stopped while its unit file still exists. A removed drop-in only
-        # changes its service, which stays.
+        # changes its service, unless that service went too.
         unit = service_of(path)
         if unit and path.endswith(".service"):
             systemd.act(UnitAction.STOP, unit)
-            changed.discard(unit)
+            stopped.add(unit)
         elif unit:
             changed.add(unit)
         etc.remove(path)
+
+    # A stopped service's unit file is gone: restarting or starting it would fail.
+    changed -= stopped
 
     etc.write_manifest()
     systemd.reload()
@@ -193,6 +197,7 @@ def apply(etc, systemd):
     for target, path in target_drop_ins:
         if systemd.is_active(target):
             wanted |= pulled_in((etc.dir / path).read_text())
+    wanted -= stopped
 
     # Changed services: running ones pick up the new unit (try-restart); stopped
     # ones stay stopped unless a target wants them (restart starts them too).

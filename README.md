@@ -99,4 +99,4 @@ Each unit and drop-in is an entry in `files`, so the keep list, gcroot and drift
 nix flake check
 ```
 
-The command is `steamos_etc.py`. `checks/sync.nix` runs it against a scratch root (`STEAMOS_ETC_ROOT`), which skips `sudo` and prints systemd actions instead of running them. `checks/unit.nix` runs `test_steamos_etc.py`, property tests for its pure functions. `checks/activation.nix` and `checks/services.nix` evaluate the module inside a Home Manager configuration.
+The command is `steamos_etc.py`. `checks/sync.nix` runs it against a scratch root (`STEAMOS_ETC_ROOT`), which skips `sudo` and prints systemd actions instead of running them. `checks/unit.nix` runs the Hypothesis property tests: `test_steamos_etc.py` for the pure functions, `test_apply.py` for `check`/`apply` over random sequences of generations. `checks/activation.nix` and `checks/services.nix` evaluate the module inside a Home Manager configuration.

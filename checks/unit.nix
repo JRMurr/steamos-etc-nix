@@ -12,6 +12,7 @@ pkgs.runCommand "steamos-etc-unit"
   ''
     cp ${../steamos_etc.py} steamos_etc.py
     cp ${../test_steamos_etc.py} test_steamos_etc.py
-    pytest -q -p no:cacheprovider test_steamos_etc.py
+    cp ${../test_apply.py} test_apply.py
+    pytest -q -p no:cacheprovider test_steamos_etc.py test_apply.py
     touch $out
   ''
