@@ -34,3 +34,20 @@ def test_pulled_in(wants_lines, after):
 
 def test_pulled_in_requires():
     assert se.pulled_in("[Unit]\nRequires=a.service\nWants=b.service c@.service\n") == {"a.service", "b.service"}
+
+
+CAPS = st.lists(st.sampled_from(["cap_sys_ptrace", "cap_perfmon", "cap_dac_read_search", "cap_chown"]),
+                unique=True, min_size=1)
+
+
+@given(CAPS)
+def test_parse_getcap(caps):
+    """libcap's two output forms; anything but effective and permitted is a mismatch."""
+    path = "/etc/frametop/ft-camd"
+    assert se.parse_getcap(f"{path} {','.join(caps)}=ep\n") == frozenset(caps)
+    assert se.parse_getcap(f"{path} = {','.join(caps)}+ep\n") == frozenset(caps)
+    assert se.parse_getcap(f"{path} {','.join(caps)}=eip\n") is None
+
+
+def test_parse_getcap_none():
+    assert se.parse_getcap("") == frozenset()
