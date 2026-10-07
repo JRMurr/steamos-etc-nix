@@ -44,6 +44,36 @@ let
       };
     };
 
+  # A file given as more than text: a copy of a store path, its mode, file capabilities.
+  fileType = lib.types.submodule {
+    options = {
+      text = lib.mkOption {
+        type = lib.types.nullOr lib.types.lines;
+        default = null;
+        description = "The file's content. Set this or `source`.";
+      };
+      source = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = "A file to copy, such as a program from the store. Set this or `text`.";
+      };
+      mode = lib.mkOption {
+        type = lib.types.strMatching "0?[0-7]{3,4}";
+        default = "0644";
+        description = "The file's mode, in octal.";
+      };
+      capabilities = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [ "cap_sys_ptrace" ];
+        description = ''
+          File capabilities, effective and permitted (setcap NAMES+ep). A copy of a
+          program can carry them; a store path can't.
+        '';
+      };
+    };
+  };
+
   dropUnset = lib.mapAttrs (_: lib.filterAttrs (_: value: value != [ ]));
 
   serviceFiles =
@@ -75,14 +105,22 @@ in
     enable = lib.mkEnableOption "the steamos-etc command, which installs `files` into /etc";
 
     files = lib.mkOption {
-      type = lib.types.attrsOf lib.types.lines;
+      type = lib.types.attrsOf (lib.types.either lib.types.lines fileType);
       default = { };
-      example = {
-        "tmpfiles.d/example.conf" = "d /run/example 0755 root root -";
-      };
+      example = lib.literalExpression ''
+        {
+          "tmpfiles.d/example.conf" = "d /run/example 0755 root root -";
+          "example/tool" = {
+            source = "''${pkgs.example}/bin/tool";
+            mode = "0755";
+            capabilities = [ "cap_net_raw" ];
+          };
+        }
+      '';
       description = ''
-        Files to keep under /etc, relative path -> content. Installed as real
-        files, not store links, and added to SteamOS's atomic-update keep list.
+        Files to keep under /etc, relative path -> content, or a file copied from
+        `source` with a `mode` and file `capabilities`. Installed as real files, not
+        store links, and added to SteamOS's atomic-update keep list.
       '';
     };
 
@@ -148,10 +186,15 @@ in
 
       # TODO: timers and sockets, the same way as services.
       {
-        assertions = lib.mapAttrsToList (name: unit: {
-          assertion = builtins.all (key: installDeps ? ${key}) (builtins.attrNames (unit.Install or { }));
-          message = "programs.steamos-etc.services.${name}.Install: only WantedBy and RequiredBy are supported.";
-        }) cfg.services;
+        assertions =
+          lib.mapAttrsToList (name: unit: {
+            assertion = builtins.all (key: installDeps ? ${key}) (builtins.attrNames (unit.Install or { }));
+            message = "programs.steamos-etc.services.${name}.Install: only WantedBy and RequiredBy are supported.";
+          }) cfg.services
+          ++ lib.mapAttrsToList (path: file: {
+            assertion = builtins.isString file || (file.text == null) != (file.source == null);
+            message = "programs.steamos-etc.files.\"${path}\": set one of text and source.";
+          }) cfg.files;
 
         programs.steamos-etc.files = lib.concatMapAttrs serviceFiles cfg.services;
       }

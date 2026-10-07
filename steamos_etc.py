@@ -1,10 +1,12 @@
 """steamos-etc: install the declared /etc files, remove ones no longer declared.
 
-STEAMOS_ETC_ROOT points /etc somewhere else, for tests: no sudo, no systemd.
+STEAMOS_ETC_ROOT points /etc somewhere else, for tests: no sudo, no systemd, and file
+capabilities recorded in a file there instead of set.
 """
 import argparse
 import enum
 import filecmp
+import json
 import os
 import re
 import shutil
@@ -15,6 +17,14 @@ from pathlib import Path
 # Substituted by package.nix.
 TREE = Path("@tree@")
 MANIFEST = "@manifest@"
+ATTRIBUTES_FILE = Path("@attributes@")  # path -> {"mode": "0755", "capabilities": [...]}
+GETCAP = "@getcap@"
+SETCAP = "@setcap@"
+
+# path -> {"mode": int, "capabilities": [names]}, for files that declare them (main loads it).
+ATTRIBUTES = {}
+DEFAULT_MODE = 0o644
+SCRATCH_CAPS = "scratch-capabilities.json"  # beside a scratch root's etc/
 
 GCROOT = Path("/nix/var/nix/gcroots/steamos-etc")
 
@@ -91,10 +101,79 @@ class Systemd:
             self.run("systemd-tmpfiles", "--create", *map(str, paths))
 
 
-class Etc:
+def parse_getcap(output):
+    """getcap's capabilities for one file: effective and permitted ones, as names. Empty for
+    none; None for any other flags, which never match a declaration."""
+    words = output.split()
+    if not words:
+        return frozenset()
+    # "PATH cap_a,cap_b=ep", or older libcap's "PATH = cap_a,cap_b+ep"
+    spec, sep = (words[2], "+") if len(words) >= 3 and words[1] == "=" else (words[1], "=")
+    names, _, flags = spec.rpartition(sep)
+    if flags != "ep":
+        return None
+    return frozenset(names.split(","))
+
+
+class LiveCaps:
+    """File capabilities through libcap's getcap and setcap."""
+
+    def get(self, path):
+        out = subprocess.run([GETCAP, str(path)], capture_output=True, text=True, check=True).stdout
+        return parse_getcap(out)
+
+    def set(self, path, caps):
+        if caps:
+            subprocess.run([SETCAP, ",".join(sorted(caps)) + "+ep", str(path)], check=True)
+        else:
+            subprocess.run([SETCAP, "-r", str(path)], capture_output=True)  # fails if it had none
+
+    def forget(self, path):
+        """A removed file's capabilities went with it."""
+
+
+class ScratchCaps:
+    """File capabilities recorded in a JSON file beside a scratch root's etc/: setting real
+    ones needs root."""
+
     def __init__(self, root):
+        self.file = root / SCRATCH_CAPS
+
+    def load(self):
+        return json.loads(self.file.read_text()) if self.file.is_file() else {}
+
+    def get(self, path):
+        return frozenset(self.load().get(str(path), []))
+
+    def set(self, path, caps):
+        recorded = self.load()
+        recorded[str(path)] = sorted(caps)
+        self.file.parent.mkdir(parents=True, exist_ok=True)
+        self.file.write_text(json.dumps(recorded))
+
+    def forget(self, path):
+        """A removed file's capabilities go with it, as real ones do."""
+        self.set(path, frozenset())
+
+
+def declared(path):
+    """A file's declared mode and capabilities."""
+    attributes = ATTRIBUTES.get(path, {})
+    return attributes.get("mode", DEFAULT_MODE), frozenset(attributes.get("capabilities", []))
+
+
+def load_attributes(file):
+    """ATTRIBUTES_FILE, with its octal mode strings as numbers."""
+    return {path: {"mode": int(a["mode"], 8), "capabilities": a["capabilities"]}
+            for path, a in json.loads(file.read_text()).items()}
+
+
+class Etc:
+    def __init__(self, root, caps):
+        """caps: LiveCaps for the real /etc, ScratchCaps for a scratch root."""
         self.dir = root / "etc"
         self.manifest = self.dir / MANIFEST
+        self.caps = caps
 
     def managed(self):
         """Relative paths of every declared file, sorted."""
@@ -113,11 +192,17 @@ class Etc:
 
     def is_current(self, path):
         """A symlink counts as drift even with the right content: its target may
-        not be mounted yet when the file is needed."""
+        not be mounted yet when the file is needed. So do a changed mode and
+        changed capabilities."""
         installed = self.dir / path
         if installed.is_symlink() or not installed.is_file():
             return False
-        return filecmp.cmp(TREE / path, installed, shallow=False)
+        if not filecmp.cmp(TREE / path, installed, shallow=False):
+            return False
+        mode, caps = declared(path)
+        if installed.stat().st_mode & 0o7777 != mode:
+            return False
+        return self.caps.get(installed) == caps
 
     def drift(self):
         differs = [f"differs: /etc/{p}" for p in self.managed() if not self.is_current(p)]
@@ -130,11 +215,14 @@ class Etc:
         installed.unlink(missing_ok=True)
         installed.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(TREE / path, installed)
-        installed.chmod(0o644)
+        mode, caps = declared(path)
+        installed.chmod(mode)
+        self.caps.set(installed, caps)  # after the content: writing a file clears them
         print(f"installed /etc/{path}")
 
     def remove(self, path):
         (self.dir / path).unlink(missing_ok=True)
+        self.caps.forget(self.dir / path)
         print(f"removed /etc/{path}")
 
     def write_manifest(self):
@@ -228,9 +316,13 @@ def main():
     parser.add_argument("--check", action="store_true", help="only report drift; exits 1 if there is any")
     args = parser.parse_args()
 
+    global ATTRIBUTES
+    ATTRIBUTES = load_attributes(ATTRIBUTES_FILE)
+
     scratch = os.environ.get("STEAMOS_ETC_ROOT")
     mode = Mode.SCRATCH if scratch else Mode.LIVE
-    etc = Etc(Path(scratch or "/"))
+    root = Path(scratch or "/")
+    etc = Etc(root, ScratchCaps(root) if scratch else LiveCaps())
 
     if args.check:
         return check(etc)

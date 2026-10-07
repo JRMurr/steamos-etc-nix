@@ -64,12 +64,26 @@ home-manager switch --flake ~/nix-config && steamos-etc
 
 | Option | What it does |
 | --- | --- |
-| `files` | Path relative to `/etc` -> content |
+| `files` | Path relative to `/etc` -> content, or a copied file with a mode and capabilities (see [Programs](#programs)) |
 | `services` | System services, written like Home Manager's `systemd.user.services`. See [Services](#services). |
 | `waitForNix` | Holds your user session until `nix.mount` is up (a `user@.service` drop-in). Without it Home Manager's `environment.d` and `user-dirs.dirs` links can dangle at login. |
 | `gpuDrivers` | Sets up `/run/opengl-driver` at boot with a tmpfiles rule. Replaces `non-nixos-gpu-setup`, whose rule is itself a store link and so can't be read at boot. Also silences Home Manager telling you to run that script. |
 
 If you already ran `non-nixos-gpu-setup`, `steamos-etc` replaces its `/etc/tmpfiles.d/non-nixos-gpu.conf` link. You can then delete its leftover gcroot at `/nix/var/nix/gcroots/non-nixos-gpu.conf`.
+
+## Programs
+
+A program that needs root or file capabilities can't run them from the store, which carries neither. Declare a copy instead:
+
+```nix
+programs.steamos-etc.files."frametop/ft-camd" = {
+  source = "${pkgs.ft-camd}/bin/ft-camd";
+  mode = "0755";
+  capabilities = [ "cap_sys_ptrace" "cap_perfmon" ];  # setcap ...+ep
+};
+```
+
+`steamos-etc` copies it as a real file, sets the mode, and gives it the capabilities. A changed mode or capabilities count as drift, and a copy you stop declaring is removed, like any other file. `/etc` on SteamOS is an overlay mounted without `nosuid`, which file capabilities need.
 
 ## Services
 

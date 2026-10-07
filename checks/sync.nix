@@ -38,6 +38,17 @@ let
     };
   };
 
+  # A program copied from the store, with a mode and capabilities, then no longer declared.
+  tool = pkgs.writeShellScript "tool" "echo tool";
+  programBefore = pkgs.callPackage ../package.nix {
+    files."example/tool" = {
+      source = tool;
+      mode = "0750";
+      capabilities = [ "cap_net_raw" ];
+    };
+  };
+  programAfter = pkgs.callPackage ../package.nix { files = { }; };
+
   keepList = "root/etc/atomic-update.conf.d/steamos-etc.conf";
 in
 pkgs.runCommand "steamos-etc-sync" { } ''
@@ -93,6 +104,23 @@ pkgs.runCommand "steamos-etc-sync" { } ''
   grep -q 'user@' units.log && fail "template unit restarted"
   grep -q 'multi-user' units.log && fail "target restarted"
   [[ $(wc -l < units.log) == 6 ]] || fail "unexpected actions: $(cat units.log)"
+
+  # A copied program: a real file, its mode, its capabilities (recorded in a scratch root).
+  export STEAMOS_ETC_ROOT=$PWD/program
+  mkdir -p program/etc
+  ${programBefore}/bin/steamos-etc > /dev/null
+  [[ -L program/etc/example/tool ]] && fail "program installed as a link"
+  cmp ${tool} program/etc/example/tool || fail "program content"
+  [[ $(stat -c %a program/etc/example/tool) == 750 ]] || fail "program mode"
+  grep -q '"cap_net_raw"' program/scratch-capabilities.json || fail "program capabilities"
+  ${programBefore}/bin/steamos-etc --check || fail "program drift right after install"
+  chmod 755 program/etc/example/tool
+  ${programBefore}/bin/steamos-etc --check && fail "check missed a changed mode"
+  ${programBefore}/bin/steamos-etc > /dev/null
+  [[ $(stat -c %a program/etc/example/tool) == 750 ]] || fail "mode not repaired"
+  ${programAfter}/bin/steamos-etc > /dev/null
+  [[ -e program/etc/example/tool ]] && fail "undeclared program kept"
+  grep -q cap_net_raw program/scratch-capabilities.json && fail "removed program's capabilities kept"
 
   touch $out
 ''

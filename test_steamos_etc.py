@@ -1,4 +1,5 @@
 """Tests for the pure parts of steamos_etc.py. The CLI is covered by checks/sync.nix."""
+import pytest
 from hypothesis import given, strategies as st
 
 import steamos_etc as se
@@ -34,3 +35,27 @@ def test_pulled_in(wants_lines, after):
 
 def test_pulled_in_requires():
     assert se.pulled_in("[Unit]\nRequires=a.service\nWants=b.service c@.service\n") == {"a.service", "b.service"}
+
+
+CAPS = st.lists(st.sampled_from(["cap_sys_ptrace", "cap_perfmon", "cap_dac_read_search", "cap_chown"]),
+                unique=True, min_size=1)
+
+
+@given(CAPS)
+def test_parse_getcap(caps):
+    """libcap's two output forms; anything but effective and permitted is a mismatch."""
+    path = "/etc/frametop/ft-camd"
+    assert se.parse_getcap(f"{path} {','.join(caps)}=ep\n") == frozenset(caps)
+    assert se.parse_getcap(f"{path} = {','.join(caps)}+ep\n") == frozenset(caps)
+    assert se.parse_getcap(f"{path} {','.join(caps)}=eip\n") is None
+
+
+def test_parse_getcap_none():
+    assert se.parse_getcap("") == frozenset()
+
+
+def test_etc_needs_a_caps_backend(tmp_path):
+    """No default: a live /etc without LiveCaps would record capabilities instead of setting them."""
+    with pytest.raises(TypeError):
+        se.Etc(tmp_path)
+    assert se.Etc(tmp_path, se.ScratchCaps(tmp_path)).caps.file == tmp_path / se.SCRATCH_CAPS

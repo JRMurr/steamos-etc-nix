@@ -16,6 +16,11 @@ let
         programs.steamos-etc = {
           enable = true;
           files."tmpfiles.d/demo.conf" = "d /run/demo 0755 root root -\n";
+          files."demo/tool" = {
+            source = pkgs.writeShellScript "tool" "echo tool";
+            mode = "0755";
+            capabilities = [ "cap_net_raw" ];
+          };
         };
       }
     ];
@@ -33,10 +38,12 @@ pkgs.runCommand "steamos-etc-activation" { } ''
   mkdir -p root/etc
   source ${step}
   grep -q 'tmpfiles.d/demo.conf' warnings || fail "drifted file not named"
+  grep -q 'demo/tool' warnings || fail "drifted program not named"
   grep -q 'run steamos-etc' warnings || fail "no hint to run steamos-etc"
 
   rm warnings
   ${package}/bin/steamos-etc
+  [[ $(stat -c %a root/etc/demo/tool) == 755 ]] || fail "program mode"
   source ${step}
   [[ ! -e warnings ]] || fail "warned on an up-to-date /etc: $(cat warnings)"
 
