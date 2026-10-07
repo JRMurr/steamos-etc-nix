@@ -1,4 +1,5 @@
 """Tests for the pure parts of steamos_etc.py. The CLI is covered by checks/sync.nix."""
+import pytest
 from hypothesis import given, strategies as st
 
 import steamos_etc as se
@@ -51,3 +52,10 @@ def test_parse_getcap(caps):
 
 def test_parse_getcap_none():
     assert se.parse_getcap("") == frozenset()
+
+
+def test_etc_needs_a_caps_backend(tmp_path):
+    """No default: a live /etc without LiveCaps would record capabilities instead of setting them."""
+    with pytest.raises(TypeError):
+        se.Etc(tmp_path)
+    assert se.Etc(tmp_path, se.ScratchCaps(tmp_path)).caps.file == tmp_path / se.SCRATCH_CAPS

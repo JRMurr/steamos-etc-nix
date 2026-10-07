@@ -128,6 +128,9 @@ class LiveCaps:
         else:
             subprocess.run([SETCAP, "-r", str(path)], capture_output=True)  # fails if it had none
 
+    def forget(self, path):
+        """A removed file's capabilities went with it."""
+
 
 class ScratchCaps:
     """File capabilities recorded in a JSON file beside a scratch root's etc/: setting real
@@ -148,6 +151,10 @@ class ScratchCaps:
         self.file.parent.mkdir(parents=True, exist_ok=True)
         self.file.write_text(json.dumps(recorded))
 
+    def forget(self, path):
+        """A removed file's capabilities go with it, as real ones do."""
+        self.set(path, frozenset())
+
 
 def declared(path):
     """A file's declared mode and capabilities."""
@@ -162,10 +169,11 @@ def load_attributes(file):
 
 
 class Etc:
-    def __init__(self, root, caps=None):
+    def __init__(self, root, caps):
+        """caps: LiveCaps for the real /etc, ScratchCaps for a scratch root."""
         self.dir = root / "etc"
         self.manifest = self.dir / MANIFEST
-        self.caps = caps or ScratchCaps(root)
+        self.caps = caps
 
     def managed(self):
         """Relative paths of every declared file, sorted."""
@@ -214,8 +222,7 @@ class Etc:
 
     def remove(self, path):
         (self.dir / path).unlink(missing_ok=True)
-        if isinstance(self.caps, ScratchCaps):
-            self.caps.set(self.dir / path, frozenset())  # gone with the file, as real ones are
+        self.caps.forget(self.dir / path)
         print(f"removed /etc/{path}")
 
     def write_manifest(self):
@@ -315,7 +322,7 @@ def main():
     scratch = os.environ.get("STEAMOS_ETC_ROOT")
     mode = Mode.SCRATCH if scratch else Mode.LIVE
     root = Path(scratch or "/")
-    etc = Etc(root, None if scratch else LiveCaps())
+    etc = Etc(root, ScratchCaps(root) if scratch else LiveCaps())
 
     if args.check:
         return check(etc)

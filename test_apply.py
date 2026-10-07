@@ -140,7 +140,7 @@ def test_apply_sequence(gens, planted):
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         se.MANIFEST = "steamos-etc/manifest"
-        etc = se.Etc(tmp / "root")
+        etc = se.Etc(tmp / "root", se.ScratchCaps(tmp / "root"))
         etc.dir.mkdir(parents=True)
         (etc.dir / UNMANAGED).write_text(UNMANAGED_TEXT)
 
@@ -181,7 +181,7 @@ def test_attributes_drift(mode, capabilities, tamper):
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         se.MANIFEST = "steamos-etc/manifest"
-        etc = se.Etc(tmp / "root")
+        etc = se.Etc(tmp / "root", se.ScratchCaps(tmp / "root"))
         etc.dir.mkdir(parents=True)
         (etc.dir / UNMANAGED).write_text(UNMANAGED_TEXT)
         tree = tmp / "tree"
